@@ -144,6 +144,85 @@
   .tree-time {
     font-size: 11px; color: #c7c7cc; margin-left: auto;
   }
+  /* 派工按钮 */
+  .node-actions {
+    display: flex; gap: 8px; margin-top: 8px;
+    padding-top: 8px; border-top: 0.5px dashed rgba(0,0,0,0.08);
+  }
+  .action-btn {
+    flex: 1; padding: 7px 10px; border-radius: 8px;
+    font-size: 12px; font-weight: 600; cursor: pointer;
+    border: none; transition: all 0.15s;
+  }
+  .action-dispatch {
+    background: #007aff; color: #fff;
+  }
+  .action-dispatch:active { background: #0051d5; }
+  .action-pr {
+    background: #34c759; color: #fff;
+  }
+  .action-pr:active { background: #28a745; }
+  .action-view-pr {
+    background: #f0f0f2; color: #1c1c1e;
+    text-decoration: none; display: inline-flex;
+    align-items: center; justify-content: center;
+  }
+  .pr-badge {
+    display: inline-block; padding: 2px 8px; margin-left: 6px;
+    background: #8957e5; color: #fff;
+    border-radius: 10px; font-size: 10px; font-weight: 600;
+  }
+  .pr-badge.merged { background: #34c759; }
+  /* Prompt 弹窗 */
+  .prompt-modal {
+    position: fixed; inset: 0; z-index: 100;
+    background: rgba(0,0,0,0.5);
+    display: flex; align-items: flex-end;
+  }
+  .prompt-sheet {
+    background: #fff; width: 100%;
+    border-radius: 16px 16px 0 0;
+    padding: 20px; max-height: 80vh;
+    display: flex; flex-direction: column;
+  }
+  .prompt-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .prompt-title { font-size: 16px; font-weight: 600; }
+  .prompt-close {
+    background: none; border: none; font-size: 24px;
+    color: #8e8e93; cursor: pointer; padding: 0 8px;
+  }
+  .prompt-text {
+    flex: 1; overflow-y: auto;
+    background: #f5f5f7; padding: 12px; border-radius: 8px;
+    font-family: ui-monospace, monospace; font-size: 12px;
+    white-space: pre-wrap; word-break: break-word;
+    user-select: text; -webkit-user-select: text;
+    margin-bottom: 12px; line-height: 1.5;
+  }
+  .prompt-actions { display: flex; gap: 8px; }
+  .prompt-copy {
+    flex: 1; padding: 12px;
+    background: #007aff; color: #fff;
+    border: none; border-radius: 10px;
+    font-size: 15px; font-weight: 600; cursor: pointer;
+  }
+  /* 派工人选择 */
+  .dispatch-options {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    margin-bottom: 12px;
+  }
+  .dispatch-opt {
+    padding: 10px; background: #f5f5f7;
+    border: 1.5px solid transparent; border-radius: 8px;
+    font-size: 13px; cursor: pointer; text-align: center;
+  }
+  .dispatch-opt.selected {
+    background: #e3f2fd; border-color: #007aff; color: #007aff;
+    font-weight: 600;
+  }
   /* 会话列表 */
   .conv-list { padding-bottom: 20px; }
   .conv-item {
@@ -471,6 +550,7 @@ const STATUS_LABELS = {
   active: '进行中', blocked: '卡住', waiting: '等待', done: '完成', abandoned: '搁置'
 };
 const KIND_LABELS = { project: '项目', branch: '分支', ticket: '工牌' };
+let allNodes = [];  // 缓存节点供派工用
 
 function showGraph() {
   document.getElementById('backBtn').classList.remove('visible');
@@ -486,7 +566,8 @@ async function loadGraph() {
       .select('*')
       .order('last_activity_at', { ascending: false, nullsFirst: false });
     if (error) throw error;
-    renderGraph(data || []);
+    allNodes = data || [];
+    renderGraph(allNodes);
   } catch (e) {
     document.getElementById('content').innerHTML =
       `<div class="error">图谱加载失败<br><small>${e.message}</small></div>`;
@@ -536,14 +617,33 @@ function renderGraph(nodes) {
   function renderNode(n) {
     const cls = `tree-${n.kind}`;
     const timeStr = n.last_activity_at ? formatTime(n.last_activity_at) : '';
+    let prBadge = '';
+    if (n.pr_url) {
+      const cls2 = n.pr_status === 'merged' ? 'merged' : '';
+      prBadge = `<span class="pr-badge ${cls2}">PR #${n.pr_number || '?'}</span>`;
+    }
     let out = `<div class="tree-node ${cls}">
       <div class="tree-header">
         <span class="status-badge status-${n.status}">${STATUS_LABELS[n.status]}</span>
-        <span class="tree-title">${escapeHtml(n.title)}</span>
+        <span class="tree-title">${escapeHtml(n.title)}${prBadge}</span>
         <span class="tree-time">${timeStr}</span>
       </div>
-      ${n.summary ? `<div class="tree-summary">${escapeHtml(n.summary)}</div>` : ''}
-    </div>`;
+      ${n.summary ? `<div class="tree-summary">${escapeHtml(n.summary)}</div>` : ''}`;
+
+    // 动作按钮
+    const actions = [];
+    if (n.kind === 'ticket' && (n.status === 'blocked' || n.status === 'waiting')) {
+      actions.push(`<button class="action-btn action-dispatch" onclick='openDispatch(${JSON.stringify(n.id)})'>📤 派工</button>`);
+    }
+    if (n.pr_url) {
+      actions.push(`<a class="action-btn action-view-pr" href="${n.pr_url}" target="_blank">查看 PR</a>`);
+    } else if (n.kind === 'ticket' && n.status === 'active' && n.repo) {
+      actions.push(`<button class="action-btn action-pr" onclick='openPRDialog(${JSON.stringify(n.id)})'>🔀 开 PR</button>`);
+    }
+    if (actions.length) {
+      out += `<div class="node-actions">${actions.join('')}</div>`;
+    }
+    out += '</div>';
     if (n.children && n.children.length) {
       out += n.children.map(renderNode).join('');
     }
@@ -719,6 +819,135 @@ function doLogin() {
     loadConversations();
   } catch (e) {
     errEl.textContent = e.message || '验证失败';
+  }
+}
+
+// ====== 派工 / PR ======
+function buildDispatchPrompt(node, worker) {
+  const parents = [];
+  let cur = node;
+  while (cur && cur.parent_id) {
+    const parent = allNodes.find(n => n.id === cur.parent_id);
+    if (!parent) break;
+    parents.unshift(parent);
+    cur = parent;
+  }
+  const path = parents.map(p => p.title).join(' / ') + ' / ' + node.title;
+  return `# 施工任务：${node.title}
+
+## 任务路径
+${path}
+
+## 背景
+${node.summary || '(无)'}
+
+## 状态
+当前状态：${STATUS_LABELS[node.status]}
+最后活跃：${node.last_activity_at || '-'}
+
+## 施工要求
+1. 解决问题后，**直接修改代码**（不要只给方案）
+2. 完成后**开一个 PR** 到 ${node.repo || '<仓库待补充>'}${node.branch_name ? `，分支 \`${node.branch_name}\`` : ''}
+3. PR 描述里写清楚：修复了什么问题、怎么测的、有没有破坏性变更
+4. 把 PR URL 回给我，我会更新工作图谱状态
+
+## 验收标准
+- [ ] 问题不再复现 / 功能可用
+- [ ] 有测试或人工验证记录
+- [ ] PR 通过 review 并合入
+
+---
+*派工给：${worker} · ${new Date().toLocaleString('zh-CN')}*`;
+}
+
+function openDispatch(nodeId) {
+  const node = allNodes.find(n => n.id === nodeId);
+  if (!node) return;
+  const modal = document.createElement('div');
+  modal.className = 'prompt-modal';
+  modal.id = 'promptModal';
+  modal.innerHTML = `
+    <div class="prompt-sheet">
+      <div class="prompt-header">
+        <div class="prompt-title">派工：${escapeHtml(node.title)}</div>
+        <button class="prompt-close" onclick="closeModal()">×</button>
+      </div>
+      <div class="dispatch-options">
+        ${['opencode', 'deepseek', 'claude', 'human'].map(w =>
+          `<div class="dispatch-opt" data-worker="${w}" onclick="selectWorker(this)">${w}</div>`
+        ).join('')}
+      </div>
+      <textarea class="prompt-text" id="promptText" rows="14">${escapeHtml(buildDispatchPrompt(node, '<未选择>'))}</textarea>
+      <div class="prompt-actions">
+        <button class="prompt-copy" onclick="copyPromptAndDispatch('${node.id}')">复制并标记已派工</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => {
+    if (e.target === modal) closeModal();
+  });
+}
+
+function selectWorker(el) {
+  document.querySelectorAll('.dispatch-opt').forEach(o => o.classList.remove('selected'));
+  el.classList.add('selected');
+  const nodeId = document.querySelector('.prompt-copy').getAttribute('onclick').match(/'([^']+)'/)[1];
+  const node = allNodes.find(n => n.id === nodeId);
+  document.getElementById('promptText').value = buildDispatchPrompt(node, el.dataset.worker);
+}
+
+function closeModal() {
+  document.getElementById('promptModal')?.remove();
+}
+
+async function copyPromptAndDispatch(nodeId) {
+  const text = document.getElementById('promptText').value;
+  const worker = document.querySelector('.dispatch-opt.selected')?.dataset.worker || 'unknown';
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    // 降级：选中文本让用户手动复制
+    const ta = document.getElementById('promptText');
+    ta.focus(); ta.select();
+    document.execCommand('copy');
+  }
+  // 调 Supabase 标为已派工
+  try {
+    await sb.rpc('dispatch_ticket', {
+      p_node_id: nodeId,
+      p_dispatched_to: worker,
+      p_dispatch_prompt: text,
+    });
+  } catch (e) {
+    console.error('dispatch rpc failed:', e);
+  }
+  closeModal();
+  // 刷新图谱
+  await loadGraph();
+}
+
+function openPRDialog(nodeId) {
+  const node = allNodes.find(n => n.id === nodeId);
+  if (!node) return;
+  const prUrl = prompt(`为「${node.title}」登记 PR\n\n请粘贴 GitHub PR URL：`);
+  if (!prUrl) return;
+  const m = prUrl.match(/github\.com\/[^/]+\/[^/]+\/pull\/(\d+)/);
+  const prNumber = m ? parseInt(m[1]) : null;
+  attachPR(nodeId, prUrl, prNumber);
+}
+
+async function attachPR(nodeId, prUrl, prNumber) {
+  try {
+    await sb.rpc('attach_pr', {
+      p_node_id: nodeId,
+      p_pr_url: prUrl,
+      p_pr_number: prNumber,
+      p_pr_status: 'open',
+    });
+    await loadGraph();
+  } catch (e) {
+    alert('PR 登记失败: ' + (e.message || e));
   }
 }
 
