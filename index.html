@@ -56,11 +56,46 @@
   .search-box {
     padding: 8px 16px; background: #f5f5f7;
     border-bottom: 0.5px solid rgba(0,0,0,0.05);
+    display: flex; gap: 8px; align-items: center;
   }
+  .search-mode {
+    display: flex; background: #e5e5ea; border-radius: 8px; padding: 2px;
+    flex-shrink: 0;
+  }
+  .mode-btn {
+    padding: 5px 10px; background: none; border: none;
+    font-size: 13px; font-weight: 500; color: #8e8e93;
+    border-radius: 6px; cursor: pointer; transition: all 0.15s;
+  }
+  .mode-btn.active { background: #fff; color: #1c1c1e; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
   .search-box input {
-    width: 100%; padding: 8px 12px;
+    flex: 1; padding: 8px 12px;
     background: #fff; border: 0.5px solid rgba(0,0,0,0.1);
     border-radius: 10px; font-size: 15px;
+  }
+  /* 搜索结果 */
+  .search-result {
+    background: #fff; padding: 12px 16px; margin-bottom: 8px;
+    border-radius: 12px; cursor: pointer;
+    border: 0.5px solid rgba(0,0,0,0.06);
+  }
+  .search-result:active { background: #e5e5ea; }
+  .search-result .source-tag {
+    display: inline-block; padding: 1px 6px; margin-right: 6px;
+    font-size: 10px; font-weight: 600; border-radius: 4px;
+    background: #f0f0f2; color: #8e8e93;
+  }
+  .search-result .source-tag.openminis { background: #e8f4fd; color: #007aff; }
+  .search-result .title-line {
+    font-size: 13px; color: #8e8e93; margin-bottom: 4px;
+  }
+  .search-result .content-preview {
+    font-size: 14px; color: #1c1c1e; line-height: 1.4;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .search-result .content-preview mark {
+    background: #ffe58f; color: inherit; padding: 0 1px; border-radius: 2px;
   }
   /* 会话列表 */
   .conv-list { padding-bottom: 20px; }
@@ -137,7 +172,11 @@
 </div>
 
 <div class="search-box" id="searchBox">
-  <input type="search" id="searchInput" placeholder="搜索会话标题…" oninput="filterConversations()">
+  <div class="search-mode">
+    <button class="mode-btn active" data-mode="title" onclick="setSearchMode('title')">标题</button>
+    <button class="mode-btn" data-mode="content" onclick="setSearchMode('content')">全文</button>
+  </div>
+  <input type="search" id="searchInput" placeholder="搜索会话标题…" oninput="onSearchInput()" onkeydown="if(event.key==='Enter')runSearch()">
 </div>
 
 <div id="content">
@@ -183,14 +222,14 @@ const SOURCES = {
   },
 };
 
-function switchSource(source) {
+async function switchSource(source) {
   if (currentSource === source) return;
   currentSource = source;
   document.querySelectorAll('.tab').forEach(t => {
     t.classList.toggle('active', t.dataset.source === source);
   });
   showConversationList();
-  loadConversations();
+  await loadConversations();
 }
 
 // ====== 视图切换 ======
@@ -280,6 +319,97 @@ function filterConversations() {
   renderConversationList(allConversations.filter(c =>
     (c[cfg.titleField] || '').toLowerCase().includes(q)
   ));
+}
+
+// ====== 全局搜索 ======
+let searchMode = 'title';  // 'title' | 'content'
+
+function setSearchMode(mode) {
+  searchMode = mode;
+  document.querySelectorAll('.mode-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === mode);
+  });
+  const placeholder = mode === 'title' ? '搜索会话标题…' : '搜索消息内容…';
+  document.getElementById('searchInput').placeholder = placeholder;
+  onSearchInput();
+}
+
+function onSearchInput() {
+  if (searchMode === 'title') {
+    filterConversations();
+  } else {
+    // 全文模式：输入停顿 500ms 后自动搜
+    clearTimeout(window._searchTimer);
+    const q = document.getElementById('searchInput').value.trim();
+    if (!q) {
+      renderConversationList(allConversations);
+      return;
+    }
+    window._searchTimer = setTimeout(() => runSearch(), 500);
+  }
+}
+
+async function runSearch() {
+  const q = document.getElementById('searchInput').value.trim();
+  if (!q) return;
+  if (searchMode === 'title') {
+    filterConversations();
+    return;
+  }
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="loading">搜索中…</div>';
+  try {
+    const { data, error } = await sb.rpc('search_messages', {
+      search_query: q,
+      source_filter: null,
+      result_limit: 50,
+    });
+    if (error) throw error;
+    renderSearchResults(data || [], q);
+  } catch (e) {
+    content.innerHTML = `<div class="error">搜索失败<br><small>${e.message}</small></div>`;
+  }
+}
+
+function renderSearchResults(results, query) {
+  const content = document.getElementById('content');
+  if (!results.length) {
+    content.innerHTML = `<div class="empty">没有找到包含「${escapeHtml(query)}」的消息</div>`;
+    return;
+  }
+  let html = `<div style="padding: 8px 12px; color: #8e8e93; font-size: 13px;">找到 ${results.length} 条结果</div>`;
+  html += '<div style="padding: 0 12px 20px;">';
+  html += results.map(r => {
+    // 高亮关键词（简单 replace，忽略大小写）
+    const re = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    const preview = escapeHtml(r.content.slice(0, 300)).replace(re, m => `<mark>${m}</mark>`);
+    return `
+    <div class="search-result" onclick='jumpToConversation(${JSON.stringify({source: r.source, session_id: r.session_id, title: r.title || '未命名'})})'>
+      <div class="title-line">
+        <span class="source-tag ${r.source}">${r.source === 'openminis' ? 'OpenMinis' : 'WorkBuddy'}</span>
+        ${escapeHtml(r.title || '未命名会话')}
+        <span style="margin-left: 6px;">· ${formatTime(r.created_at)}</span>
+      </div>
+      <div class="content-preview">${preview}</div>
+    </div>
+    `;
+  }).join('');
+  html += '</div>';
+  content.innerHTML = html;
+}
+
+async function jumpToConversation(hit) {
+  // 切换到对应 tab，再打开会话
+  if (hit.source !== currentSource) {
+    await switchSource(hit.source);
+  }
+  const cfg = SOURCES[hit.source];
+  let conv = allConversations.find(c => c[cfg.sessionIdField] === hit.session_id);
+  if (!conv) {
+    // 直接构造一个最小对象
+    conv = { [cfg.sessionIdField]: hit.session_id, title: hit.title };
+  }
+  showConversation(conv);
 }
 
 async function loadMessages(sessionId, initial = false) {
@@ -375,34 +505,41 @@ function formatTime(isoStr) {
 }
 
 // ====== 登录 / 启动 ======
-async function signIn(email, password) {
-  const { data, error } = await sb.auth.signInWithPassword({ email, password });
-  if (error) throw error;
-  currentUser = data.user;
-  return data;
+// 简单的"邮箱即口令"验证。匹配以下任一邮箱即可访问（不区分大小写、忽略前后空格）。
+const ALLOWED_EMAILS = ['ronglaiz@yahoo.com', '105229365@qq.com'];
+const AUTH_KEY = 'wb_viewer_auth_email';
+
+function isAuthed() {
+  const saved = (localStorage.getItem(AUTH_KEY) || '').trim().toLowerCase();
+  return ALLOWED_EMAILS.includes(saved);
 }
 
-async function signOut() {
-  await sb.auth.signOut();
+function signIn(email) {
+  const normalized = email.trim().toLowerCase();
+  if (!ALLOWED_EMAILS.includes(normalized)) {
+    throw new Error('邮箱不在允许列表');
+  }
+  localStorage.setItem(AUTH_KEY, normalized);
+  currentUser = { email: normalized };
+}
+
+function signOut() {
+  localStorage.removeItem(AUTH_KEY);
   currentUser = null;
   showLoginScreen();
 }
 
 function showLoginScreen() {
-  document.getElementById('headerTitle').textContent = '登录';
+  document.getElementById('headerTitle').textContent = '验证身份';
   document.getElementById('backBtn').classList.remove('visible');
   document.getElementById('searchBox').classList.add('hidden');
   document.getElementById('tabs').style.display = 'none';
   document.getElementById('content').innerHTML = `
     <div style="padding: 40px 24px; max-width: 400px; margin: 0 auto;">
       <div style="font-size: 32px; text-align: center; margin-bottom: 8px;">💪</div>
-      <div style="font-size: 17px; font-weight: 600; text-align: center; margin-bottom: 24px;">登录查看你的对话</div>
-      <input id="loginEmail" type="email" placeholder="邮箱" autocomplete="email" style="
-        width: 100%; padding: 12px 14px; margin-bottom: 12px;
-        border: 0.5px solid rgba(0,0,0,0.15); border-radius: 10px;
-        font-size: 15px; background: #fff;
-      ">
-      <input id="loginPassword" type="password" placeholder="密码" autocomplete="current-password" style="
+      <div style="font-size: 17px; font-weight: 600; text-align: center; margin-bottom: 8px;">输入邮箱查看对话</div>
+      <div style="font-size: 13px; color: #8e8e93; text-align: center; margin-bottom: 24px;">仅限授权的邮箱可以访问</div>
+      <input id="loginEmail" type="email" placeholder="your@email.com" autocomplete="email" style="
         width: 100%; padding: 12px 14px; margin-bottom: 16px;
         border: 0.5px solid rgba(0,0,0,0.15); border-radius: 10px;
         font-size: 15px; background: #fff;
@@ -411,35 +548,41 @@ function showLoginScreen() {
         width: 100%; padding: 13px;
         background: #007aff; color: #fff; border: none; border-radius: 10px;
         font-size: 16px; font-weight: 600; cursor: pointer;
-      ">登录</button>
+      ">进入</button>
       <div id="loginError" style="color: #ff3b30; font-size: 14px; margin-top: 12px; text-align: center;"></div>
     </div>
   `;
-  setTimeout(() => document.getElementById('loginEmail')?.focus(), 100);
+  setTimeout(() => {
+    const el = document.getElementById('loginEmail');
+    if (el) {
+      el.focus();
+      el.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+    }
+  }, 100);
 }
 
-async function doLogin() {
+function doLogin() {
   const email = document.getElementById('loginEmail').value.trim();
-  const password = document.getElementById('loginPassword').value;
   const errEl = document.getElementById('loginError');
   errEl.textContent = '';
-  if (!email || !password) {
-    errEl.textContent = '请填写邮箱和密码';
+  if (!email) {
+    errEl.textContent = '请输入邮箱';
     return;
   }
   try {
-    await signIn(email, password);
+    signIn(email);
+    document.getElementById('logoutBtn').style.display = 'block';
+    document.getElementById('tabs').style.display = 'flex';
     showConversationList();
     loadConversations();
   } catch (e) {
-    errEl.textContent = '登录失败: ' + (e.message || e);
+    errEl.textContent = e.message || '验证失败';
   }
 }
 
 async function boot() {
-  const { data: { session } } = await sb.auth.getSession();
-  if (session) {
-    currentUser = session.user;
+  if (isAuthed()) {
+    currentUser = { email: localStorage.getItem(AUTH_KEY) };
     document.getElementById('logoutBtn').style.display = 'block';
     document.getElementById('tabs').style.display = 'flex';
     showConversationList();
@@ -447,24 +590,11 @@ async function boot() {
   } else {
     showLoginScreen();
   }
-  // 监听登录态变化
-  sb.auth.onAuthStateChange((event, session) => {
-    if (event === 'SIGNED_IN' && session) {
-      currentUser = session.user;
-      document.getElementById('logoutBtn').style.display = 'block';
-      document.getElementById('tabs').style.display = 'flex';
-    } else if (event === 'SIGNED_OUT') {
-      currentUser = null;
-      document.getElementById('logoutBtn').style.display = 'none';
-      document.getElementById('tabs').style.display = 'none';
-      showLoginScreen();
-    }
-  });
 }
 
 boot();
 // 已登录时每 30s 刷新当前视图
-setInterval(() => { if (currentUser) refresh(); }, 30000);
+setInterval(() => { if (isAuthed()) refresh(); }, 30000);
 </script>
 
 </body>
