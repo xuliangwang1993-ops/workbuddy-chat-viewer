@@ -733,6 +733,7 @@ function escapeHtml(s) {
 function formatTime(isoStr) {
   if (!isoStr) return '';
   const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return '';  // 无效日期直接返回空
   const now = new Date();
   const sameDay = d.toDateString() === now.toDateString();
   const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
