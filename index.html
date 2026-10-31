@@ -97,6 +97,53 @@
   .search-result .content-preview mark {
     background: #ffe58f; color: inherit; padding: 0 1px; border-radius: 2px;
   }
+  /* 图谱 */
+  .graph-container {
+    padding: 16px; background: #f5f5f7; min-height: 60vh;
+  }
+  .graph-stats {
+    display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;
+    margin-bottom: 16px;
+  }
+  .stat-card {
+    background: #fff; border-radius: 10px; padding: 10px 6px;
+    text-align: center; border: 0.5px solid rgba(0,0,0,0.06);
+  }
+  .stat-num { font-size: 20px; font-weight: 700; line-height: 1.1; }
+  .stat-label { font-size: 11px; color: #8e8e93; margin-top: 2px; }
+  .stat-card.active .stat-num { color: #007aff; }
+  .stat-card.blocked .stat-num { color: #ff3b30; }
+  .stat-card.waiting .stat-num { color: #ff9500; }
+  .stat-card.done .stat-num { color: #34c759; }
+  .stat-card.abandoned .stat-num { color: #8e8e93; }
+  .tree-node {
+    background: #fff; border-radius: 10px; padding: 12px 14px;
+    margin-bottom: 6px; border-left: 3px solid #e5e5ea;
+    border-top: 0.5px solid rgba(0,0,0,0.04);
+    border-right: 0.5px solid rgba(0,0,0,0.04);
+    border-bottom: 0.5px solid rgba(0,0,0,0.04);
+  }
+  .tree-project { border-left-color: #5856d6; font-weight: 600; }
+  .tree-branch { margin-left: 16px; }
+  .tree-ticket { margin-left: 32px; font-size: 14px; }
+  .tree-header { display: flex; align-items: center; gap: 8px; }
+  .tree-title { flex: 1; font-size: 15px; }
+  .tree-ticket .tree-title { font-size: 14px; }
+  .status-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 600;
+  }
+  .status-active { background: #e3f2fd; color: #007aff; }
+  .status-blocked { background: #ffebee; color: #ff3b30; }
+  .status-waiting { background: #fff4e5; color: #ff9500; }
+  .status-done { background: #e8f5e9; color: #34c759; }
+  .status-abandoned { background: #f5f5f7; color: #8e8e93; }
+  .tree-summary {
+    font-size: 12px; color: #8e8e93; margin-top: 4px; line-height: 1.4;
+  }
+  .tree-time {
+    font-size: 11px; color: #c7c7cc; margin-left: auto;
+  }
   /* 会话列表 */
   .conv-list { padding-bottom: 20px; }
   .conv-item {
@@ -169,6 +216,7 @@
 <div class="tabs" id="tabs">
   <button class="tab active" data-source="workbuddy" onclick="switchSource('workbuddy')">WorkBuddy</button>
   <button class="tab" data-source="openminis" onclick="switchSource('openminis')">OpenMinis</button>
+  <button class="tab" data-source="graph" onclick="switchSource('graph')">图谱</button>
 </div>
 
 <div class="search-box" id="searchBox">
@@ -228,8 +276,13 @@ async function switchSource(source) {
   document.querySelectorAll('.tab').forEach(t => {
     t.classList.toggle('active', t.dataset.source === source);
   });
-  showConversationList();
-  await loadConversations();
+  if (source === 'graph') {
+    showGraph();
+    await loadGraph();
+  } else {
+    showConversationList();
+    await loadConversations();
+  }
 }
 
 // ====== 视图切换 ======
@@ -239,6 +292,7 @@ function showConversationList() {
   document.getElementById('header').classList.remove('with-back');
   document.getElementById('headerTitle').textContent = currentSource === 'openminis' ? 'OpenMinis 历史' : 'WorkBuddy 对话';
   document.getElementById('searchBox').classList.remove('hidden');
+  document.getElementById('searchBox').style.display = '';
   renderConversationList(allConversations);
 }
 
@@ -410,6 +464,94 @@ async function jumpToConversation(hit) {
     conv = { [cfg.sessionIdField]: hit.session_id, title: hit.title };
   }
   showConversation(conv);
+}
+
+// ====== 工作图谱 ======
+const STATUS_LABELS = {
+  active: '进行中', blocked: '卡住', waiting: '等待', done: '完成', abandoned: '搁置'
+};
+const KIND_LABELS = { project: '项目', branch: '分支', ticket: '工牌' };
+
+function showGraph() {
+  document.getElementById('backBtn').classList.remove('visible');
+  document.getElementById('headerTitle').textContent = '工作图谱';
+  document.getElementById('searchBox').classList.add('hidden');
+  document.getElementById('content').innerHTML = '<div class="loading">加载图谱…</div>';
+}
+
+async function loadGraph() {
+  try {
+    const { data, error } = await sb
+      .from('work_nodes')
+      .select('*')
+      .order('last_activity_at', { ascending: false, nullsFirst: false });
+    if (error) throw error;
+    renderGraph(data || []);
+  } catch (e) {
+    document.getElementById('content').innerHTML =
+      `<div class="error">图谱加载失败<br><small>${e.message}</small></div>`;
+  }
+}
+
+function renderGraph(nodes) {
+  const content = document.getElementById('content');
+  if (!nodes.length) {
+    content.innerHTML = '<div class="empty">还没有工作节点</div>';
+    return;
+  }
+  // 统计
+  const stats = { active: 0, blocked: 0, waiting: 0, done: 0, abandoned: 0 };
+  nodes.forEach(n => stats[n.status] = (stats[n.status] || 0) + 1);
+  // 建树
+  const byId = {};
+  nodes.forEach(n => byId[n.id] = { ...n, children: [] });
+  const roots = [];
+  nodes.forEach(n => {
+    if (n.parent_id && byId[n.parent_id]) {
+      byId[n.parent_id].children.push(byId[n.id]);
+    } else {
+      roots.push(byId[n.id]);
+    }
+  });
+  // 子节点排序：blocked > waiting > active > done > abandoned
+  const order = { blocked: 0, waiting: 1, active: 2, done: 3, abandoned: 4 };
+  function sortChildren(arr) {
+    arr.sort((a, b) => (order[a.status] ?? 5) - (order[b.status] ?? 5));
+    arr.forEach(c => sortChildren(c.children));
+  }
+  sortChildren(roots);
+
+  let html = '<div class="graph-container">';
+  // 顶部统计
+  html += '<div class="graph-stats">';
+  ['blocked', 'waiting', 'active', 'done', 'abandoned'].forEach(s => {
+    html += `<div class="stat-card ${s}">
+      <div class="stat-num">${stats[s] || 0}</div>
+      <div class="stat-label">${STATUS_LABELS[s]}</div>
+    </div>`;
+  });
+  html += '</div>';
+
+  // 树
+  function renderNode(n) {
+    const cls = `tree-${n.kind}`;
+    const timeStr = n.last_activity_at ? formatTime(n.last_activity_at) : '';
+    let out = `<div class="tree-node ${cls}">
+      <div class="tree-header">
+        <span class="status-badge status-${n.status}">${STATUS_LABELS[n.status]}</span>
+        <span class="tree-title">${escapeHtml(n.title)}</span>
+        <span class="tree-time">${timeStr}</span>
+      </div>
+      ${n.summary ? `<div class="tree-summary">${escapeHtml(n.summary)}</div>` : ''}
+    </div>`;
+    if (n.children && n.children.length) {
+      out += n.children.map(renderNode).join('');
+    }
+    return out;
+  }
+  html += roots.map(renderNode).join('');
+  html += '</div>';
+  content.innerHTML = html;
 }
 
 async function loadMessages(sessionId, initial = false) {
