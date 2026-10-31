@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WorkBuddy 对话</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+    background: #f5f5f7;
+    color: #1c1c1e;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* 顶栏 */
+  .header {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(255,255,255,0.85);
+    backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 0.5px solid rgba(0,0,0,0.1);
+    padding: 12px 16px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .back-btn {
+    display: none;
+    background: none; border: none; font-size: 17px;
+    color: #007aff; cursor: pointer; padding: 4px 8px; margin-left: -8px;
+  }
+  .back-btn.visible { display: block; }
+  .header h1 { font-size: 17px; font-weight: 600; flex: 1; text-align: center; }
+  .header.with-back h1 { text-align: left; }
+  .refresh-btn {
+    background: none; border: none; font-size: 20px;
+    color: #007aff; cursor: pointer; padding: 4px 8px;
+  }
+  /* 搜索 */
+  .search-box {
+    padding: 8px 16px; background: #f5f5f7;
+    border-bottom: 0.5px solid rgba(0,0,0,0.05);
+  }
+  .search-box input {
+    width: 100%; padding: 8px 12px;
+    background: #fff; border: 0.5px solid rgba(0,0,0,0.1);
+    border-radius: 10px; font-size: 15px;
+  }
+  /* 会话列表 */
+  .conv-list { padding-bottom: 20px; }
+  .conv-item {
+    background: #fff; padding: 14px 16px;
+    border-bottom: 0.5px solid rgba(0,0,0,0.05);
+    cursor: pointer; transition: background 0.15s;
+  }
+  .conv-item:active { background: #e5e5ea; }
+  .conv-title {
+    font-size: 16px; font-weight: 500; margin-bottom: 4px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .conv-meta {
+    font-size: 13px; color: #8e8e93;
+    display: flex; justify-content: space-between;
+  }
+  /* 消息列表 */
+  .msg-list { padding: 12px 12px 40px; }
+  .msg-item {
+    margin-bottom: 12px;
+    display: flex; flex-direction: column;
+  }
+  .msg-item.user { align-items: flex-end; }
+  .msg-item.assistant { align-items: flex-start; }
+  .msg-bubble {
+    max-width: 82%;
+    padding: 10px 14px;
+    border-radius: 18px;
+    font-size: 15px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .msg-item.user .msg-bubble {
+    background: #007aff; color: #fff;
+    border-bottom-right-radius: 4px;
+  }
+  .msg-item.assistant .msg-bubble {
+    background: #fff; color: #1c1c1e;
+    border-bottom-left-radius: 4px;
+  }
+  .msg-meta {
+    font-size: 11px; color: #8e8e93;
+    margin-top: 4px; padding: 0 6px;
+  }
+  /* 状态 */
+  .empty, .loading, .error {
+    text-align: center; padding: 60px 20px;
+    color: #8e8e93; font-size: 15px;
+  }
+  .error { color: #ff3b30; }
+  .hidden { display: none !important; }
+  /* 加载更多 */
+  .load-more {
+    text-align: center; padding: 12px;
+    color: #007aff; font-size: 15px; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<div class="header" id="header">
+  <button class="back-btn" id="backBtn" onclick="goBack()">‹ 返回</button>
+  <h1 id="headerTitle">WorkBuddy 对话</h1>
+  <button class="refresh-btn" onclick="refresh()" title="刷新">⟳</button>
+  <button class="refresh-btn" id="logoutBtn" onclick="signOut()" title="登出" style="display:none;">⏻</button>
+</div>
+
+<div class="search-box" id="searchBox">
+  <input type="search" id="searchInput" placeholder="搜索会话标题…" oninput="filterConversations()">
+</div>
+
+<div id="content">
+  <div class="loading">加载中…</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// ====== 配置 ======
+const SUPABASE_URL = "https://elecldbgysdbymkyucwf.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVsZWNsZGJneXNkYnlta3l1Y3dmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE2NDQ2ODksImV4cCI6MjEwNzIyMDY4OX0.yyMZB0b-FGi8R5o-79-Pv50n3zDRVICmwVNlPNZ3eYU";
+
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// ====== 状态 ======
+let allConversations = [];
+let currentConversation = null;
+let currentMessages = [];
+let messageOffset = 0;
+const MESSAGE_PAGE_SIZE = 50;
+let currentUser = null;
+
+// ====== 视图切换 ======
+function showConversationList() {
+  currentConversation = null;
+  document.getElementById('backBtn').classList.remove('visible');
+  document.getElementById('header').classList.remove('with-back');
+  document.getElementById('headerTitle').textContent = 'WorkBuddy 对话';
+  document.getElementById('searchBox').classList.remove('hidden');
+  renderConversationList(allConversations);
+}
+
+function showConversation(conv) {
+  currentConversation = conv;
+  messageOffset = 0;
+  currentMessages = [];
+  document.getElementById('backBtn').classList.add('visible');
+  document.getElementById('header').classList.add('with-back');
+  document.getElementById('headerTitle').textContent = conv.title || '未命名会话';
+  document.getElementById('searchBox').classList.add('hidden');
+  document.getElementById('content').innerHTML = '<div class="loading">加载消息…</div>';
+  loadMessages(conv.id, true);
+}
+
+function goBack() { showConversationList(); }
+function refresh() {
+  if (currentConversation) {
+    showConversation(currentConversation);
+  } else {
+    loadConversations();
+  }
+}
+
+// ====== API ======
+async function loadConversations() {
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="loading">加载会话…</div>';
+  try {
+    const { data, error } = await sb
+      .from('conversations')
+      .select('id,title,last_message_at,created_at')
+      .order('last_message_at', { ascending: false })
+      .limit(200);
+    if (error) throw error;
+    allConversations = data || [];
+    renderConversationList(allConversations);
+  } catch (e) {
+    content.innerHTML = `<div class="error">加载失败<br><small>${e.message}</small></div>`;
+  }
+}
+
+function renderConversationList(convs) {
+  const content = document.getElementById('content');
+  if (!convs.length) {
+    content.innerHTML = '<div class="empty">还没有对话记录<br><small>在电脑上聊一句试试</small></div>';
+    return;
+  }
+  content.innerHTML = '<div class="conv-list">' + convs.map(c => `
+    <div class="conv-item" onclick='showConversation(${JSON.stringify(c).replace(/'/g, "&#39;")})'>
+      <div class="conv-title">${escapeHtml(c.title || '未命名会话')}</div>
+      <div class="conv-meta">
+        <span>${formatTime(c.last_message_at)}</span>
+      </div>
+    </div>
+  `).join('') + '</div>';
+}
+
+function filterConversations() {
+  const q = document.getElementById('searchInput').value.trim().toLowerCase();
+  if (!q) {
+    renderConversationList(allConversations);
+    return;
+  }
+  renderConversationList(allConversations.filter(c =>
+    (c.title || '').toLowerCase().includes(q)
+  ));
+}
+
+async function loadMessages(convId, initial = false) {
+  try {
+    const { data, error } = await sb
+      .from('messages')
+      .select('id,role,content,created_at')
+      .eq('conversation_id', convId)
+      .order('created_at', { ascending: false })
+      .range(messageOffset, messageOffset + MESSAGE_PAGE_SIZE - 1);
+    if (error) throw error;
+    const newMsgs = (data || []).reverse();
+    if (initial) {
+      currentMessages = newMsgs;
+    } else {
+      currentMessages = newMsgs.concat(currentMessages);
+    }
+    messageOffset += (data || []).length;
+    renderMessages((data || []).length >= MESSAGE_PAGE_SIZE);
+  } catch (e) {
+    document.getElementById('content').innerHTML =
+      `<div class="error">加载失败<br><small>${e.message}</small></div>`;
+  }
+}
+
+function renderMessages(hasMore) {
+  const content = document.getElementById('content');
+  if (!currentMessages.length) {
+    content.innerHTML = '<div class="empty">这个会话还没有消息</div>';
+    return;
+  }
+  let html = '<div class="msg-list">';
+  if (hasMore) {
+    html += '<div class="load-more" onclick="loadOlder()">加载更早的消息</div>';
+  }
+  html += currentMessages.map(m => {
+    const role = m.role === 'user' ? 'user' : 'assistant';
+    return `
+      <div class="msg-item ${role}">
+        <div class="msg-bubble">${escapeHtml(m.content)}</div>
+        <div class="msg-meta">${formatTime(m.created_at)}</div>
+      </div>
+    `;
+  }).join('');
+  html += '</div>';
+  content.innerHTML = html;
+  // 滚到底部
+  window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' });
+}
+
+function loadOlder() { loadMessages(currentConversation.id, false); }
+
+// ====== 工具 ======
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+function formatTime(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+  const isYesterday = d.toDateString() === yesterday.toDateString();
+  const time = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  if (sameDay) return time;
+  if (isYesterday) return '昨天 ' + time;
+  if (d.getFullYear() === now.getFullYear()) {
+    return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) + ' ' + time;
+  }
+  return d.toLocaleDateString('zh-CN') + ' ' + time;
+}
+
+// ====== 登录 / 启动 ======
+async function signIn(email, password) {
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) throw error;
+  currentUser = data.user;
+  return data;
+}
+
+async function signOut() {
+  await sb.auth.signOut();
+  currentUser = null;
+  showLoginScreen();
+}
+
+function showLoginScreen() {
+  document.getElementById('headerTitle').textContent = '登录';
+  document.getElementById('backBtn').classList.remove('visible');
+  document.getElementById('searchBox').classList.add('hidden');
+  document.getElementById('content').innerHTML = `
+    <div style="padding: 40px 24px; max-width: 400px; margin: 0 auto;">
+      <div style="font-size: 32px; text-align: center; margin-bottom: 8px;">💪</div>
+      <div style="font-size: 17px; font-weight: 600; text-align: center; margin-bottom: 24px;">登录查看你的对话</div>
+      <input id="loginEmail" type="email" placeholder="邮箱" autocomplete="email" style="
+        width: 100%; padding: 12px 14px; margin-bottom: 12px;
+        border: 0.5px solid rgba(0,0,0,0.15); border-radius: 10px;
+        font-size: 15px; background: #fff;
+      ">
+      <input id="loginPassword" type="password" placeholder="密码" autocomplete="current-password" style="
+        width: 100%; padding: 12px 14px; margin-bottom: 16px;
+        border: 0.5px solid rgba(0,0,0,0.15); border-radius: 10px;
+        font-size: 15px; background: #fff;
+      ">
+      <button onclick="doLogin()" style="
+        width: 100%; padding: 13px;
+        background: #007aff; color: #fff; border: none; border-radius: 10px;
+        font-size: 16px; font-weight: 600; cursor: pointer;
+      ">登录</button>
+      <div id="loginError" style="color: #ff3b30; font-size: 14px; margin-top: 12px; text-align: center;"></div>
+    </div>
+  `;
+  setTimeout(() => document.getElementById('loginEmail')?.focus(), 100);
+}
+
+async function doLogin() {
+  const email = document.getElementById('loginEmail').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const errEl = document.getElementById('loginError');
+  errEl.textContent = '';
+  if (!email || !password) {
+    errEl.textContent = '请填写邮箱和密码';
+    return;
+  }
+  try {
+    await signIn(email, password);
+    showConversationList();
+    loadConversations();
+  } catch (e) {
+    errEl.textContent = '登录失败: ' + (e.message || e);
+  }
+}
+
+async function boot() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) {
+    currentUser = session.user;
+    document.getElementById('logoutBtn').style.display = 'block';
+    showConversationList();
+    loadConversations();
+  } else {
+    showLoginScreen();
+  }
+  // 监听登录态变化
+  sb.auth.onAuthStateChange((event, session) => {
+    if (event === 'SIGNED_IN' && session) {
+      currentUser = session.user;
+      document.getElementById('logoutBtn').style.display = 'block';
+    } else if (event === 'SIGNED_OUT') {
+      currentUser = null;
+      document.getElementById('logoutBtn').style.display = 'none';
+      showLoginScreen();
+    }
+  });
+}
+
+boot();
+// 已登录时每 30s 刷新当前视图
+setInterval(() => { if (currentUser) refresh(); }, 30000);
+</script>
+
+</body>
+</html>
