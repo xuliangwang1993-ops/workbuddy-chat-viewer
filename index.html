@@ -35,6 +35,23 @@
     background: none; border: none; font-size: 20px;
     color: #007aff; cursor: pointer; padding: 4px 8px;
   }
+  /* Tabs */
+  .tabs {
+    display: flex; gap: 0;
+    background: #fff; border-bottom: 0.5px solid rgba(0,0,0,0.08);
+  }
+  .tab {
+    flex: 1; padding: 12px 0;
+    background: none; border: none;
+    font-size: 15px; font-weight: 500;
+    color: #8e8e93; cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+  }
+  .tab.active {
+    color: #007aff;
+    border-bottom-color: #007aff;
+  }
   /* 搜索 */
   .search-box {
     padding: 8px 16px; background: #f5f5f7;
@@ -109,9 +126,14 @@
 
 <div class="header" id="header">
   <button class="back-btn" id="backBtn" onclick="goBack()">‹ 返回</button>
-  <h1 id="headerTitle">WorkBuddy 对话</h1>
+  <h1 id="headerTitle">对话历史</h1>
   <button class="refresh-btn" onclick="refresh()" title="刷新">⟳</button>
   <button class="refresh-btn" id="logoutBtn" onclick="signOut()" title="登出" style="display:none;">⏻</button>
+</div>
+
+<div class="tabs" id="tabs">
+  <button class="tab active" data-source="workbuddy" onclick="switchSource('workbuddy')">WorkBuddy</button>
+  <button class="tab" data-source="openminis" onclick="switchSource('openminis')">OpenMinis</button>
 </div>
 
 <div class="search-box" id="searchBox">
@@ -137,13 +159,46 @@ let currentMessages = [];
 let messageOffset = 0;
 const MESSAGE_PAGE_SIZE = 50;
 let currentUser = null;
+let currentSource = 'workbuddy';  // 'workbuddy' | 'openminis'
+
+// 数据源配置：表名 + 字段映射
+const SOURCES = {
+  workbuddy: {
+    sessionTable: 'conversations',
+    messageTable: 'messages',
+    sessionIdField: 'id',
+    messageSessionField: 'conversation_id',
+    titleField: 'title',
+    timeField: 'last_message_at',
+    orderField: 'created_at',
+  },
+  openminis: {
+    sessionTable: 'openminis_sessions',
+    messageTable: 'openminis_messages',
+    sessionIdField: 'session_id',
+    messageSessionField: 'session_id',
+    titleField: 'title',
+    timeField: 'updated_at',
+    orderField: 'message_index',
+  },
+};
+
+function switchSource(source) {
+  if (currentSource === source) return;
+  currentSource = source;
+  document.querySelectorAll('.tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.source === source);
+  });
+  showConversationList();
+  loadConversations();
+}
 
 // ====== 视图切换 ======
 function showConversationList() {
   currentConversation = null;
   document.getElementById('backBtn').classList.remove('visible');
   document.getElementById('header').classList.remove('with-back');
-  document.getElementById('headerTitle').textContent = 'WorkBuddy 对话';
+  document.getElementById('headerTitle').textContent = currentSource === 'openminis' ? 'OpenMinis 历史' : 'WorkBuddy 对话';
   document.getElementById('searchBox').classList.remove('hidden');
   renderConversationList(allConversations);
 }
@@ -152,12 +207,13 @@ function showConversation(conv) {
   currentConversation = conv;
   messageOffset = 0;
   currentMessages = [];
+  const cfg = SOURCES[currentSource];
   document.getElementById('backBtn').classList.add('visible');
   document.getElementById('header').classList.add('with-back');
   document.getElementById('headerTitle').textContent = conv.title || '未命名会话';
   document.getElementById('searchBox').classList.add('hidden');
   document.getElementById('content').innerHTML = '<div class="loading">加载消息…</div>';
-  loadMessages(conv.id, true);
+  loadMessages(conv[cfg.sessionIdField], true);
 }
 
 function goBack() { showConversationList(); }
@@ -171,14 +227,17 @@ function refresh() {
 
 // ====== API ======
 async function loadConversations() {
+  const cfg = SOURCES[currentSource];
   const content = document.getElementById('content');
   content.innerHTML = '<div class="loading">加载会话…</div>';
   try {
-    const { data, error } = await sb
-      .from('conversations')
-      .select('id,title,last_message_at,created_at')
-      .order('last_message_at', { ascending: false })
-      .limit(200);
+    let query = sb.from(cfg.sessionTable).select('*');
+    if (currentSource === 'workbuddy') {
+      query = query.order('last_message_at', { ascending: false });
+    } else {
+      query = query.order('updated_at', { ascending: false });
+    }
+    const { data, error } = await query.limit(200);
     if (error) throw error;
     allConversations = data || [];
     renderConversationList(allConversations);
@@ -188,49 +247,72 @@ async function loadConversations() {
 }
 
 function renderConversationList(convs) {
+  const cfg = SOURCES[currentSource];
   const content = document.getElementById('content');
   if (!convs.length) {
     content.innerHTML = '<div class="empty">还没有对话记录<br><small>在电脑上聊一句试试</small></div>';
     return;
   }
-  content.innerHTML = '<div class="conv-list">' + convs.map(c => `
+  content.innerHTML = '<div class="conv-list">' + convs.map(c => {
+    const title = c[cfg.titleField] || '未命名会话';
+    const time = c[cfg.timeField];
+    const extra = currentSource === 'openminis' && c.message_count
+      ? `<span>${c.message_count} 条</span>` : '';
+    return `
     <div class="conv-item" onclick='showConversation(${JSON.stringify(c).replace(/'/g, "&#39;")})'>
-      <div class="conv-title">${escapeHtml(c.title || '未命名会话')}</div>
+      <div class="conv-title">${escapeHtml(title)}</div>
       <div class="conv-meta">
-        <span>${formatTime(c.last_message_at)}</span>
+        <span>${formatTime(time)}</span>
+        ${extra}
       </div>
     </div>
-  `).join('') + '</div>';
+    `;
+  }).join('') + '</div>';
 }
 
 function filterConversations() {
+  const cfg = SOURCES[currentSource];
   const q = document.getElementById('searchInput').value.trim().toLowerCase();
   if (!q) {
     renderConversationList(allConversations);
     return;
   }
   renderConversationList(allConversations.filter(c =>
-    (c.title || '').toLowerCase().includes(q)
+    (c[cfg.titleField] || '').toLowerCase().includes(q)
   ));
 }
 
-async function loadMessages(convId, initial = false) {
+async function loadMessages(sessionId, initial = false) {
+  const cfg = SOURCES[currentSource];
   try {
-    const { data, error } = await sb
-      .from('messages')
-      .select('id,role,content,created_at')
-      .eq('conversation_id', convId)
-      .order('created_at', { ascending: false })
-      .range(messageOffset, messageOffset + MESSAGE_PAGE_SIZE - 1);
+    // openminis 用 message_index 升序；workbuddy 用 created_at 倒序拿最近 N 条
+    let query = sb.from(cfg.messageTable)
+      .select('*')
+      .eq(cfg.messageSessionField, sessionId);
+
+    if (currentSource === 'openminis') {
+      query = query.order('message_index', { ascending: true })
+                   .range(messageOffset, messageOffset + MESSAGE_PAGE_SIZE - 1);
+    } else {
+      query = query.order('created_at', { ascending: false })
+                   .range(messageOffset, messageOffset + MESSAGE_PAGE_SIZE - 1);
+    }
+
+    const { data, error } = await query;
     if (error) throw error;
-    const newMsgs = (data || []).reverse();
+    const rows = data || [];
+    // workbuddy 拉的是倒序，要反过来
+    const newMsgs = currentSource === 'workbuddy' ? rows.reverse() : rows;
     if (initial) {
       currentMessages = newMsgs;
+    } else if (currentSource === 'openminis') {
+      // openminis 翻页是往后翻（更老的消息）
+      currentMessages = currentMessages.concat(newMsgs);
     } else {
       currentMessages = newMsgs.concat(currentMessages);
     }
-    messageOffset += (data || []).length;
-    renderMessages((data || []).length >= MESSAGE_PAGE_SIZE);
+    messageOffset += rows.length;
+    renderMessages(rows.length >= MESSAGE_PAGE_SIZE);
   } catch (e) {
     document.getElementById('content').innerHTML =
       `<div class="error">加载失败<br><small>${e.message}</small></div>`;
@@ -245,14 +327,16 @@ function renderMessages(hasMore) {
   }
   let html = '<div class="msg-list">';
   if (hasMore) {
-    html += '<div class="load-more" onclick="loadOlder()">加载更早的消息</div>';
+    const label = currentSource === 'openminis' ? '加载更多消息' : '加载更早的消息';
+    html += `<div class="load-more" onclick="loadOlder()">${label}</div>`;
   }
   html += currentMessages.map(m => {
     const role = m.role === 'user' ? 'user' : 'assistant';
+    const time = m.created_at || '';
     return `
       <div class="msg-item ${role}">
         <div class="msg-bubble">${escapeHtml(m.content)}</div>
-        <div class="msg-meta">${formatTime(m.created_at)}</div>
+        <div class="msg-meta">${formatTime(time)}</div>
       </div>
     `;
   }).join('');
@@ -262,7 +346,10 @@ function renderMessages(hasMore) {
   window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' });
 }
 
-function loadOlder() { loadMessages(currentConversation.id, false); }
+function loadOlder() {
+  const cfg = SOURCES[currentSource];
+  loadMessages(currentConversation[cfg.sessionIdField], false);
+}
 
 // ====== 工具 ======
 function escapeHtml(s) {
@@ -305,6 +392,7 @@ function showLoginScreen() {
   document.getElementById('headerTitle').textContent = '登录';
   document.getElementById('backBtn').classList.remove('visible');
   document.getElementById('searchBox').classList.add('hidden');
+  document.getElementById('tabs').style.display = 'none';
   document.getElementById('content').innerHTML = `
     <div style="padding: 40px 24px; max-width: 400px; margin: 0 auto;">
       <div style="font-size: 32px; text-align: center; margin-bottom: 8px;">💪</div>
@@ -353,6 +441,7 @@ async function boot() {
   if (session) {
     currentUser = session.user;
     document.getElementById('logoutBtn').style.display = 'block';
+    document.getElementById('tabs').style.display = 'flex';
     showConversationList();
     loadConversations();
   } else {
@@ -363,9 +452,11 @@ async function boot() {
     if (event === 'SIGNED_IN' && session) {
       currentUser = session.user;
       document.getElementById('logoutBtn').style.display = 'block';
+      document.getElementById('tabs').style.display = 'flex';
     } else if (event === 'SIGNED_OUT') {
       currentUser = null;
       document.getElementById('logoutBtn').style.display = 'none';
+      document.getElementById('tabs').style.display = 'none';
       showLoginScreen();
     }
   });
